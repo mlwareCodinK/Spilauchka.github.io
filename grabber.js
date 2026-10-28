@@ -75,7 +75,7 @@ async function grab(pageUrl, opts = {}) {
   let browser;
   try {
     const { chromium } = require('playwright');
-    browser = await chromium.launch({ headless, args: ['--autoplay-policy=no-user-gesture-required'] });
+    browser = await chromium.launch({ headless, args: ['--autoplay-policy=no-user-gesture-required', '--no-sandbox'] });
   } catch (e) {
     log('Браузер недоступен (' + e.message.split('\n')[0] + ') — работаю без браузера.');
     return grabLite(pageUrl, opts);

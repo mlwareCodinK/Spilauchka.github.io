@@ -5,6 +5,12 @@ const path = require('path');
 const { grab } = require('./grabber');
 
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
+const PASSWORD = process.env.PASSWORD || '';
+if (HOST !== '127.0.0.1' && !PASSWORD) {
+  console.error('Для доступа снаружи задай пароль: PASSWORD=... HOST=0.0.0.0 node server.js');
+  process.exit(1);
+}
 const OUT_DIR = path.join(__dirname, 'downloads');
 const jobs = new Map();
 let nextId = 1;
@@ -25,6 +31,14 @@ function readBody(req) {
 http
   .createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
+
+    if (PASSWORD) {
+      const given = Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString();
+      if (given.slice(given.indexOf(':') + 1) !== PASSWORD) {
+        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dplayer"' });
+        return res.end('Нужен пароль');
+      }
+    }
 
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -85,4 +99,4 @@ http
 
     json(res, 404, { error: 'Не найдено' });
   })
-  .listen(PORT, '127.0.0.1', () => console.log(`Открой в браузере: http://localhost:${PORT}`));
+  .listen(PORT, HOST, () => console.log(`Открой в браузере: http://${HOST === '0.0.0.0' ? 'ВАШ_IP' : HOST}:${PORT}`));
