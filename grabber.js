@@ -269,8 +269,28 @@ async function grab(pageUrl, opts = {}) {
     });
 
     log('Открываю страницу в чистом браузере (куки очищены)...');
-    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    const title = await page.title();
+    // диагностика в лог: почему страница может быть пустой
+    let problems = 0;
+    page.on('requestfailed', (r) => {
+      if (problems++ < 12) log(`Не загрузилось: ${r.url().slice(0, 100)} — ${r.failure() && r.failure().errorText}`);
+    });
+    page.on('pageerror', (e) => {
+      if (problems++ < 12) log('Ошибка скрипта на странице: ' + String(e.message).slice(0, 150));
+    });
+    try {
+      const resp = await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      log(`Ответ сайта: HTTP ${resp ? resp.status() : '?'}, адрес: ${page.url().slice(0, 100)}`);
+    } catch (e) {
+      log('Страница не загрузилась полностью: ' + e.message.split('\n')[0]);
+    }
+    const title = await page.title().catch(() => '');
+    log(`Заголовок страницы: "${title}"`);
+    const probe = async (label) => {
+      const info = await page
+        .evaluate(() => ({ text: (document.body && document.body.innerText.trim().length) || 0, els: document.querySelectorAll('*').length, frames: document.querySelectorAll('iframe').length, videos: document.querySelectorAll('video').length }))
+        .catch(() => null);
+      if (info) log(`${label}: текста ${info.text} симв., элементов ${info.els}, iframe ${info.frames}, video ${info.videos}`);
+    };
 
     let end = Date.now() + waitMs;
     let tick = 0;
@@ -297,6 +317,7 @@ async function grab(pageUrl, opts = {}) {
           log(`Слайдер автоматически не найден (попытка ${sliderTries}/8) — можно протянуть вручную на скриншоте`);
         }
       }
+      if (tick === 4 || tick === 15) await probe('Состояние страницы');
       if (onShot) {
         const shot = await page.screenshot({ type: 'jpeg', quality: 60, timeout: 4000 }).catch(() => null);
         if (shot) onShot(shot);

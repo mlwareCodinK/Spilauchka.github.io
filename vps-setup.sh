@@ -6,7 +6,7 @@ BRANCH=ccr-1b774c8b-uj3cfj
 DIR=/opt/dpl
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl git ffmpeg ca-certificates
+apt-get install -y curl git ffmpeg ca-certificates fonts-noto-cjk
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 18 ]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
