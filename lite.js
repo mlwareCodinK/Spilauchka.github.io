@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { UA, sleep, safeName, downloadFile, downloadHls } = require('./common');
 
-const MEDIA_RE = /(?:https?:)?(?:\/\/|\/)[^"'\s<>\\()]+?\.(?:m3u8|mp4|webm|flv)(?:\?[^"'\s<>\\()]*)?/gi;
+const MEDIA_RE = /(?:https?:)?(?:\/\/|\/)[^"'\s<>\\()]+?\.(?:m3u8|mp4|webm|flv)(?:\?[^"'\s<>\\()]*)?|https?:\/\/[^"'\s<>\\()]+\/m3u8?\/[^"'\s<>\\()]+/gi;
 
 function unescapeJs(s) {
   return s.replace(/\\u0026/g, '&').replace(/\\\//g, '/').replace(/&amp;/g, '&');

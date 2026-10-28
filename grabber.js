@@ -6,7 +6,7 @@ const path = require('path');
 const { UA, sleep, safeName, downloadFile, downloadHls } = require('./common');
 const { grabLite } = require('./lite');
 
-const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)/i;
+const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
 const PLAYLIST_CT_RE = /mpegurl/i;
 // Нажимаем play во всех фреймах: DPlayer часто лежит в iframe.
 async function startPlayback(page) {
@@ -57,7 +57,7 @@ function pickBest(cands) {
 }
 
 function kindOf(url, ct = '') {
-  if (/\.m3u8(\?|#|$)/i.test(url) || PLAYLIST_CT_RE.test(ct)) return 'hls';
+  if (/\.m3u8(\?|#|$)|\/m3u8?(\/|\?|$)/i.test(url) || PLAYLIST_CT_RE.test(ct)) return 'hls';
   if (/\.mpd(\?|#|$)/i.test(url)) return 'dash';
   return 'file';
 }
