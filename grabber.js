@@ -3,7 +3,7 @@
 // ждёт буферизации (по умолчанию 60 сек), ловит ссылку на видео и скачивает его.
 const fs = require('fs');
 const path = require('path');
-const { UA, sleep, safeName, downloadFile, downloadHls } = require('./common');
+const { UA, sleep, safeName, downloadFile, downloadHls, grabDirect, isDirectVideoUrl } = require('./common');
 const { grabLite } = require('./lite');
 
 const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
@@ -219,10 +219,12 @@ async function grab(pageUrl, opts = {}) {
     onProgress,
     headless = true,
     sliderSelector = '',
+    referer, // (только для прямой ссылки) с какого адреса якобы грузим видео
     onShot, // (jpegBuffer) => void — отдаёт кадры страницы в веб-форму
     takeCommands, // () => [{type,x0,y0,x1,y1,touch}] — ручные команды из веб-формы
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
+  if (isDirectVideoUrl(pageUrl)) return grabDirect(pageUrl, opts);
 
   let browser;
   try {

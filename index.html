@@ -25,7 +25,8 @@
 </head>
 <body>
 <h1>Скачать видео с DPlayer</h1>
-<input id="url" type="text" placeholder="Вставь ссылку на страницу с видео" autofocus>
+<input id="url" type="text" placeholder="Ссылка на страницу с видео — или прямая ссылка на m3u8/mp4" autofocus>
+<input id="referer" type="text" placeholder="Referer для прямой ссылки (необязательно), например https://nvhai37.top/">
 <div class="row">
   <label>Ждать буферизацию, сек: <input id="wait" type="number" value="60" min="5" max="600"></label>
   <button id="go">Скачать</button>
@@ -106,7 +107,7 @@ wrap.addEventListener('pointercancel', () => { start = null; draw(null); });
 // --- запуск задачи ---
 $('go').onclick = async () => {
   $('go').disabled = true; $('log').textContent = ''; $('result').innerHTML = ''; $('shotBox').style.display = 'none';
-  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify({ url: $('url').value.trim(), wait: $('wait').value }) });
+  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify({ url: $('url').value.trim(), wait: $('wait').value, referer: $('referer').value.trim() }) });
   const j = await r.json();
   if (!r.ok) { $('log').innerHTML = '<span class="err">' + j.error + '</span>'; $('go').disabled = false; return; }
   jobId = j.id; running = true; refreshShot();

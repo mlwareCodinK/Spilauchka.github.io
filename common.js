@@ -122,4 +122,29 @@ async function downloadHls(url, headers, outDir, base, log) {
   return ts;
 }
 
-module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls };
+// Прямая ссылка на видео (m3u8/mp4): браузер не нужен, качаем сразу.
+const DIRECT_RE = /\.(m3u8|mp4|webm|flv)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
+const isDirectVideoUrl = (u) => DIRECT_RE.test(u);
+
+async function grabDirect(url, { outDir, log = console.log, onProgress, referer } = {}) {
+  const path = require('path');
+  fs.mkdirSync(outDir, { recursive: true });
+  const headers = { 'User-Agent': UA };
+  if (referer) headers.Referer = referer;
+  const base = 'video-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  log('Прямая ссылка на видео — браузер не нужен.');
+  let file;
+  if (/m3u8/i.test(url)) {
+    log('Скачиваю HLS-поток...');
+    file = await downloadHls(url, headers, outDir, base, log);
+  } else {
+    const ext = (url.split('?')[0].match(/\.(\w{2,4})$/) || [, 'mp4'])[1];
+    file = path.join(outDir, `${base}.${ext}`);
+    log('Скачиваю файл...');
+    await downloadFile(url, headers, file, log, onProgress);
+  }
+  log('Готово: ' + file);
+  return { file, title: base, source: url };
+}
+
+module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls, grabDirect, isDirectVideoUrl };
