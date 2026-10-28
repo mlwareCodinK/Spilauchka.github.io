@@ -5,16 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Скачать видео DPlayer</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; background: #14161a; color: #e8e8e8; }
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; background: #14161a; color: #e8e8e8; }
   h1 { font-size: 1.4rem; }
   input, button { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a3f48; background: #1d2026; color: inherit; }
   input[type=text] { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   input[type=number] { width: 90px; }
   button { background: #3b82f6; border-color: #3b82f6; color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   pre { background: #0d0f12; padding: 12px; border-radius: 8px; min-height: 120px; max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: .85rem; }
   .err { color: #f87171; } a.dl { display: inline-block; margin-top: 10px; color: #4ade80; font-weight: 600; }
+  .hint { font-size: .85rem; color: #9aa0aa; }
+  #shotBox { display: none; margin: 14px 0; }
+  #wrap { position: relative; border: 1px solid #3a3f48; border-radius: 8px; overflow: hidden; touch-action: none; user-select: none; }
+  #shot { width: 100%; display: block; -webkit-user-drag: none; }
+  #ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  label.opt { display: flex; gap: 6px; align-items: center; }
 </style>
 </head>
 <body>
@@ -22,29 +28,98 @@
 <input id="url" type="text" placeholder="Вставь ссылку на страницу с видео" autofocus>
 <div class="row">
   <label>Ждать буферизацию, сек: <input id="wait" type="number" value="60" min="5" max="600"></label>
-  <label>Селектор слайдера (необязательно): <input id="slider" type="text" style="width:180px;margin:0"></label>
   <button id="go">Скачать</button>
 </div>
-<p style="font-size:.85rem;color:#9aa0aa">Страница открывается в чистом браузере без куки, видео играет ~минуту, затем ссылка на файл перехватывается и видео скачивается.</p>
+
+<div id="shotBox">
+  <div class="row">
+    <label class="opt"><input type="radio" name="mode" value="drag" checked> Протянуть</label>
+    <label class="opt"><input type="radio" name="mode" value="click"> Клик</label>
+    <label class="opt"><input type="checkbox" id="touch"> Касанием (если мышь не срабатывает)</label>
+  </div>
+  <div id="wrap">
+    <img id="shot" alt="">
+    <svg id="ov"></svg>
+  </div>
+  <p class="hint">Так сейчас выглядит страница на сервере. Если там слайдер — зажми палец на ползунке и протяни до конца дорожки, потом отпусти. Для кнопок выбери «Клик» и ткни.</p>
+</div>
+
 <pre id="log"></pre>
 <div id="result"></div>
+
 <script>
 const $ = (id) => document.getElementById(id);
+let jobId = null, running = false, lastUrl = null;
+
+// --- живой скриншот ---
+async function refreshShot() {
+  if (!running) return;
+  try {
+    const r = await fetch('/api/shot/' + jobId + '?t=' + Date.now());
+    if (r.ok) {
+      const blob = await r.blob();
+      const u = URL.createObjectURL(blob);
+      $('shot').src = u;
+      $('shotBox').style.display = 'block';
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = u;
+    }
+  } catch {}
+  setTimeout(refreshShot, 1000);
+}
+
+// --- протягивание по скриншоту ---
+const wrap = $('wrap'), shot = $('shot'), ov = $('ov');
+let start = null;
+function toImg(e) {
+  const r = shot.getBoundingClientRect();
+  const k = shot.naturalWidth / r.width;
+  return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k, dx: e.clientX - r.left, dy: e.clientY - r.top };
+}
+function draw(a, b) {
+  ov.innerHTML = a
+    ? '<circle cx="' + a.dx + '" cy="' + a.dy + '" r="9" fill="#22c55e" fill-opacity=".8"/>' +
+      (b ? '<line x1="' + a.dx + '" y1="' + a.dy + '" x2="' + b.dx + '" y2="' + b.dy + '" stroke="#f59e0b" stroke-width="3"/><circle cx="' + b.dx + '" cy="' + b.dy + '" r="9" fill="#ef4444" fill-opacity=".8"/>' : '')
+    : '';
+}
+function send(cmd) {
+  fetch('/api/cmd/' + jobId, { method: 'POST', body: JSON.stringify(cmd) });
+}
+wrap.addEventListener('pointerdown', (e) => {
+  if (!shot.naturalWidth) return;
+  wrap.setPointerCapture(e.pointerId);
+  start = toImg(e);
+  draw(start, null);
+});
+wrap.addEventListener('pointermove', (e) => { if (start) draw(start, toImg(e)); });
+wrap.addEventListener('pointerup', (e) => {
+  if (!start) return;
+  const end = toImg(e);
+  const mode = document.querySelector('input[name=mode]:checked').value;
+  if (mode === 'click') send({ type: 'click', x0: start.x, y0: start.y });
+  else send({ type: 'drag', x0: start.x, y0: start.y, x1: end.x, y1: end.y, touch: $('touch').checked });
+  setTimeout(() => draw(null), 600);
+  start = null;
+});
+wrap.addEventListener('pointercancel', () => { start = null; draw(null); });
+
+// --- запуск задачи ---
 $('go').onclick = async () => {
-  $('go').disabled = true; $('log').textContent = ''; $('result').innerHTML = '';
-  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify({ url: $('url').value.trim(), wait: $('wait').value, slider: $('slider').value.trim() }) });
+  $('go').disabled = true; $('log').textContent = ''; $('result').innerHTML = ''; $('shotBox').style.display = 'none';
+  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify({ url: $('url').value.trim(), wait: $('wait').value }) });
   const j = await r.json();
   if (!r.ok) { $('log').innerHTML = '<span class="err">' + j.error + '</span>'; $('go').disabled = false; return; }
+  jobId = j.id; running = true; refreshShot();
   const timer = setInterval(async () => {
     const s = await (await fetch('/api/status/' + j.id)).json();
     let text = s.logs.join('\n');
     if (s.progress && s.progress.total) text += `\n${(s.progress.done / 1048576).toFixed(1)} / ${(s.progress.total / 1048576).toFixed(1)} МБ`;
     $('log').textContent = text; $('log').scrollTop = 1e9;
     if (s.status === 'done') {
-      clearInterval(timer); $('go').disabled = false;
+      clearInterval(timer); running = false; $('go').disabled = false; $('shotBox').style.display = 'none';
       $('result').innerHTML = '<a class="dl" href="/api/file/' + j.id + '">⬇ Сохранить ' + s.name.replace(/</g, '&lt;') + '</a>';
     } else if (s.status === 'error') {
-      clearInterval(timer); $('go').disabled = false;
+      clearInterval(timer); running = false; $('go').disabled = false;
       $('log').innerHTML += '\n<span class="err">Ошибка: ' + s.error.replace(/</g, '&lt;') + '</span>';
     }
   }, 1000);

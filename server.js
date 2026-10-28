@@ -55,7 +55,7 @@ http
       if (!/^https?:\/\//i.test(body.url || '')) return json(res, 400, { error: 'Нужна ссылка http(s)://...' });
       const wait = Math.min(Math.max(Number(body.wait) || 60, 5), 600);
       const id = String(nextId++);
-      const job = { status: 'running', logs: [], progress: null, file: null, error: null };
+      const job = { status: 'running', logs: [], progress: null, file: null, error: null, shot: null, commands: [] };
       jobs.set(id, job);
       grab(body.url, {
         outDir: OUT_DIR,
@@ -63,6 +63,8 @@ http
         sliderSelector: String(body.slider || '').slice(0, 200),
         log: (m) => job.logs.push(m),
         onProgress: (done, total) => (job.progress = { done, total }),
+        onShot: (buf) => (job.shot = buf),
+        takeCommands: () => job.commands.splice(0),
       })
         .then((r) => {
           job.status = 'done';
@@ -73,6 +75,29 @@ http
           job.error = e.message;
         });
       return json(res, 200, { id });
+    }
+
+    const sm = url.pathname.match(/^\/api\/(shot|cmd)\/(\d+)$/);
+    if (sm) {
+      const job = jobs.get(sm[2]);
+      if (!job) return json(res, 404, { error: 'Задача не найдена' });
+      if (sm[1] === 'shot' && req.method === 'GET') {
+        if (!job.shot || job.status !== 'running') return json(res, 404, { error: 'Нет кадра' });
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+        return res.end(job.shot);
+      }
+      if (sm[1] === 'cmd' && req.method === 'POST') {
+        let c;
+        try {
+          c = JSON.parse(await readBody(req));
+        } catch {
+          return json(res, 400, { error: 'Неверный запрос' });
+        }
+        const n = (v) => Math.min(Math.max(Number(v) || 0, 0), 5000);
+        if (job.status !== 'running') return json(res, 409, { error: 'Задача не выполняется' });
+        job.commands.push({ type: c.type === 'click' ? 'click' : 'drag', x0: n(c.x0), y0: n(c.y0), x1: n(c.x1), y1: n(c.y1), touch: !!c.touch });
+        return json(res, 200, { ok: true });
+      }
     }
 
     const m = url.pathname.match(/^\/api\/(status|file)\/(\d+)$/);

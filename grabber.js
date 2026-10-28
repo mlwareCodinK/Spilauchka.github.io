@@ -75,6 +75,47 @@ async function findSlider(frame, custom) {
     .catch(() => null);
 }
 
+// Плавное протягивание от точки до точки: мышью или настоящим касанием (через CDP).
+async function dragBetween(page, context, x0, y0, x1, y1, useTouch) {
+  const pts = [];
+  for (let i = 1; i <= 30; i++) {
+    const p = i / 30;
+    const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    pts.push([x0 + (x1 - x0) * ease, y0 + (y1 - y0) * ease + (Math.random() - 0.5) * 2]);
+  }
+  if (!useTouch) {
+    await page.mouse.move(x0, y0);
+    await page.mouse.down();
+    for (const [x, y] of pts) {
+      await page.mouse.move(x, y);
+      await sleep(15 + Math.random() * 15);
+    }
+    await page.mouse.up();
+    return;
+  }
+  const cdp = await context.newCDPSession(page);
+  const touch = (type, x, y) =>
+    cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+  await touch('touchStart', x0, y0);
+  for (const [x, y] of pts) {
+    await touch('touchMove', x, y);
+    await sleep(15 + Math.random() * 15);
+  }
+  await touch('touchEnd', x1, y1);
+}
+
+// Команда, присланная из веб-формы: протянуть или кликнуть по координатам скриншота.
+async function runCommand(page, context, c, log) {
+  const r = (n) => Math.round(n);
+  if (c.type === 'click') {
+    log(`Команда: клик (${r(c.x0)}, ${r(c.y0)})`);
+    await page.mouse.click(c.x0, c.y0);
+  } else {
+    log(`Команда: протянуть (${r(c.x0)}, ${r(c.y0)}) → (${r(c.x1)}, ${r(c.y1)})${c.touch ? ' касанием' : ''}`);
+    await dragBetween(page, context, c.x0, c.y0, c.x1, c.y1, !!c.touch);
+  }
+}
+
 async function dragSlider(page, context, frame, log) {
   const h = await frame.$('[data-dl-handle]');
   const t = await frame.$('[data-dl-track]');
@@ -86,38 +127,17 @@ async function dragSlider(page, context, frame, log) {
   const x0 = hb.x + hb.width / 2;
   const x1 = tb.x + tb.width - hb.width / 2 - 1;
   const dist = x1 - x0;
-  const pts = [];
-  for (let i = 1; i <= 30; i++) {
-    const p = i / 30;
-    const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
-    pts.push([x0 + dist * ease, y + (Math.random() - 0.5) * 2]);
-  }
-  await page.mouse.move(x0, y);
-  await page.mouse.down();
-  for (const [x, yy] of pts) {
-    await page.mouse.move(x, yy);
-    await sleep(15 + Math.random() * 15);
-  }
-  await page.mouse.up();
+  const moved = async () => {
+    const after = await h.boundingBox().catch(() => null);
+    return !after || after.x + after.width / 2 - x0 > dist * 0.6 || !(await h.isVisible().catch(() => false));
+  };
+  await dragBetween(page, context, x0, y, x1, y, false);
   await sleep(700);
-  let after = await h.boundingBox().catch(() => null);
-  if (after && after.x + after.width / 2 - x0 > dist * 0.6) return true;
-  if (!(await h.isVisible().catch(() => false))) return true;
-
-  // мышь не сработала — пробуем настоящие касания (сайт мог слушать только touch)
+  if (await moved()) return true;
   log('Мышью не вышло, пробую касанием...');
-  const cdp = await context.newCDPSession(page);
-  const touch = (type, x, yy) =>
-    cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y: yy }] });
-  await touch('touchStart', x0, y);
-  for (const [x, yy] of pts) {
-    await touch('touchMove', x, yy);
-    await sleep(15 + Math.random() * 15);
-  }
-  await touch('touchEnd', x1, y);
+  await dragBetween(page, context, x0, y, x1, y, true);
   await sleep(700);
-  after = await h.boundingBox().catch(() => null);
-  return !after || after.x + after.width / 2 - x0 > dist * 0.6 || !(await h.isVisible().catch(() => false));
+  return moved();
 }
 
 async function solveSlider(page, context, log, custom) {
@@ -199,6 +219,8 @@ async function grab(pageUrl, opts = {}) {
     onProgress,
     headless = true,
     sliderSelector = '',
+    onShot, // (jpegBuffer) => void — отдаёт кадры страницы в веб-форму
+    takeCommands, // () => [{type,x0,y0,x1,y1,touch}] — ручные команды из веб-формы
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -212,7 +234,7 @@ async function grab(pageUrl, opts = {}) {
   }
   try {
     // Новый контекст = чистый профиль без куки/кэша/localStorage
-    const context = await browser.newContext({ userAgent: UA, hasTouch: true });
+    const context = await browser.newContext({ userAgent: UA, hasTouch: true, viewport: { width: 1280, height: 720 } });
     await context.clearCookies();
     const page = await context.newPage();
 
@@ -250,15 +272,34 @@ async function grab(pageUrl, opts = {}) {
     await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     const title = await page.title();
 
-    const end = Date.now() + waitMs;
+    let end = Date.now() + waitMs;
     let tick = 0;
     let sliderDone = false;
     let sliderTries = 0;
     while (Date.now() < end) {
+      for (const c of (takeCommands && takeCommands()) || []) {
+        try {
+          await runCommand(page, context, c, log);
+          sliderDone = true; // раз руками что-то сделали, автоподбор больше не лезет
+          await sleep(800);
+          await startPlayback(page);
+          end = Date.now() + waitMs; // после ручного действия ждём буферизацию заново
+          log(`Жду буферизацию ${Math.round(waitMs / 1000)} сек после действия`);
+        } catch (e) {
+          log('Ошибка команды: ' + e.message.split('\n')[0]);
+        }
+      }
       if (!sliderDone && sliderTries < 8 && tick % 3 === 1) {
         sliderDone = await solveSlider(page, context, log, sliderSelector);
         if (sliderDone) await startPlayback(page);
-        else sliderTries++;
+        else {
+          sliderTries++;
+          log(`Слайдер автоматически не найден (попытка ${sliderTries}/8) — можно протянуть вручную на скриншоте`);
+        }
+      }
+      if (onShot) {
+        const shot = await page.screenshot({ type: 'jpeg', quality: 60, timeout: 4000 }).catch(() => null);
+        if (shot) onShot(shot);
       }
       if (tick % 5 === 0) await startPlayback(page);
       if (tick % 5 === 4) for (const s of await domVideoSources(page)) add(s, kindOf(s), 0);
