@@ -3,7 +3,7 @@
 // ждёт буферизации (по умолчанию 60 сек), ловит ссылку на видео и скачивает его.
 const fs = require('fs');
 const path = require('path');
-const { UA, sleep, safeName, downloadFile, runFfmpeg } = require('./common');
+const { UA, sleep, safeName, downloadFile, downloadHls } = require('./common');
 const { grabLite } = require('./lite');
 
 const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)/i;
@@ -131,15 +131,8 @@ async function grab(pageUrl, opts = {}) {
     const base = safeName(title);
     let dest;
     if (best.kind === 'hls') {
-      dest = path.join(outDir, base + '.mp4');
-      log('Скачиваю HLS-поток через ffmpeg...');
-      try {
-        await runFfmpeg(best.url, headers, dest, log);
-      } catch (e) {
-        log('mp4 не получился (' + e.message + '), пробую .ts');
-        dest = path.join(outDir, base + '.ts');
-        await runFfmpeg(best.url, headers, dest, log);
-      }
+      log('Скачиваю HLS-поток...');
+      dest = await downloadHls(best.url, headers, outDir, base, log);
     } else {
       const ext = (best.url.split('?')[0].match(/\.(\w{2,4})$/) || [, 'mp4'])[1];
       dest = path.join(outDir, `${base}.${ext}`);

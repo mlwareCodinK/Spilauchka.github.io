@@ -2,7 +2,7 @@
 // ищем ссылку на видео в коде страницы, её iframe и скриптах, и скачиваем.
 const fs = require('fs');
 const path = require('path');
-const { UA, sleep, safeName, downloadFile, runFfmpeg } = require('./common');
+const { UA, sleep, safeName, downloadFile, downloadHls } = require('./common');
 
 const MEDIA_RE = /(?:https?:)?(?:\/\/|\/)[^"'\s<>\\()]+?\.(?:m3u8|mp4|webm|flv)(?:\?[^"'\s<>\\()]*)?/gi;
 
@@ -81,15 +81,8 @@ async function grabLite(pageUrl, opts = {}) {
   const base = safeName(result.title);
   let dest;
   if (hls) {
-    dest = path.join(outDir, base + '.mp4');
-    log('Скачиваю HLS-поток через ffmpeg...');
-    try {
-      await runFfmpeg(best, headers, dest, log);
-    } catch (e) {
-      log('mp4 не получился, пробую .ts');
-      dest = path.join(outDir, base + '.ts');
-      await runFfmpeg(best, headers, dest, log);
-    }
+    log('Скачиваю HLS-поток...');
+    dest = await downloadHls(best, headers, outDir, base, log);
   } else {
     const ext = (best.split('?')[0].match(/\.(\w{2,4})$/) || [, 'mp4'])[1];
     dest = path.join(outDir, `${base}.${ext}`);

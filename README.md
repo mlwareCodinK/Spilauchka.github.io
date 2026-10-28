@@ -8,7 +8,9 @@
 
 Одной командой (ставит всё нужное, скачивает проект и запускает):
 
-    pkg update -y && pkg install -y nodejs ffmpeg git && git clone -b ccr-1b774c8b-uj3cfj https://github.com/mlwareCodinK/Spilauchka.github.io.git dpl && cd dpl && node server.js
+    pkg update -y && pkg install -y nodejs git && git clone -b ccr-1b774c8b-uj3cfj https://github.com/mlwareCodinK/Spilauchka.github.io.git dpl && cd dpl && node server.js
+
+ffmpeg ставить не обязательно: без него HLS (m3u8) скачивается сегментами в файл `.ts` (играет в VLC/MX Player). Если хочешь `.mp4` — `pkg install ffmpeg` (если падает с ошибкой dynamic library linking — смени зеркало командой `termux-change-repo`, затем `pkg upgrade -y`).
 
 Потом открой в браузере телефона http://localhost:3000. Или без веб-формы: `node grabber.js "ссылка"`.
 Повторный запуск: `cd ~/dpl && node server.js`.

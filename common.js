@@ -41,4 +41,85 @@ function runFfmpeg(url, headers, dest, log) {
 }
 
 
-module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg };
+
+// HLS без ffmpeg: качаем сегменты и склеиваем в .ts (поддерживает AES-128).
+async function downloadHlsNative(playlistUrl, headers, dest, log) {
+  const crypto = require('crypto');
+  const get = async (u, buf) => {
+    const r = await fetch(u, { headers });
+    if (!r.ok) throw new Error(`HTTP ${r.status} для ${u}`);
+    return buf ? Buffer.from(await r.arrayBuffer()) : r.text();
+  };
+  let url = playlistUrl;
+  let text = await get(url);
+  if (/#EXT-X-STREAM-INF/.test(text)) {
+    // мастер-плейлист: берём вариант с максимальным битрейтом
+    const lines = text.split(/\r?\n/);
+    let best = null, bw = -1;
+    lines.forEach((l, i) => {
+      const m = l.match(/^#EXT-X-STREAM-INF:.*BANDWIDTH=(\d+)/);
+      if (m && Number(m[1]) > bw) {
+        const next = lines.slice(i + 1).find((x) => x && !x.startsWith('#'));
+        if (next) { bw = Number(m[1]); best = next; }
+      }
+    });
+    if (!best) throw new Error('Не удалось разобрать мастер-плейлист');
+    url = new URL(best, url).href;
+    text = await get(url);
+  }
+  const lines = text.split(/\r?\n/);
+  const seq0 = Number((text.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/) || [, 0])[1]);
+  const segs = [];
+  let key = null;
+  for (const l of lines) {
+    if (l.startsWith('#EXT-X-KEY:')) {
+      const method = (l.match(/METHOD=([^,]+)/) || [])[1];
+      if (method === 'NONE') key = null;
+      else if (method === 'AES-128') {
+        const uri = l.match(/URI="([^"]+)"/)[1];
+        const iv = (l.match(/IV=0x([0-9a-f]+)/i) || [])[1];
+        key = { uri: new URL(uri, url).href, iv: iv && Buffer.from(iv.padStart(32, '0'), 'hex') };
+      } else throw new Error('Шифрование ' + method + ' не поддерживается');
+    } else if (l && !l.startsWith('#')) segs.push({ url: new URL(l, url).href, key, seq: seq0 + segs.length });
+  }
+  if (!segs.length) throw new Error('В плейлисте нет сегментов');
+  const keys = {};
+  const out = fs.createWriteStream(dest);
+  try {
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      let data = null;
+      for (let attempt = 0; attempt < 4 && !data; attempt++) {
+        try { data = await get(s.url, true); } catch (e) { if (attempt === 3) throw e; await sleep(1000); }
+      }
+      if (s.key) {
+        keys[s.key.uri] = keys[s.key.uri] || (await get(s.key.uri, true));
+        const iv = s.key.iv || Buffer.alloc(16);
+        if (!s.key.iv) iv.writeUInt32BE(s.seq, 12);
+        const d = crypto.createDecipheriv('aes-128-cbc', keys[s.key.uri], iv);
+        data = Buffer.concat([d.update(data), d.final()]);
+      }
+      if (!out.write(data)) await new Promise((r) => out.once('drain', r));
+      if (i % 5 === 0 || i === segs.length - 1) log(`Сегменты: ${i + 1}/${segs.length}`);
+    }
+  } finally {
+    await new Promise((r) => out.end(r));
+  }
+}
+
+// Сначала ffmpeg (mp4), если не вышло — своими силами в .ts. Возвращает путь к файлу.
+async function downloadHls(url, headers, outDir, base, log) {
+  const path = require('path');
+  const mp4 = path.join(outDir, base + '.mp4');
+  try {
+    await runFfmpeg(url, headers, mp4, log);
+    return mp4;
+  } catch (e) {
+    log('ffmpeg не сработал (' + e.message + '), качаю сегменты сам (получится .ts)...');
+  }
+  const ts = path.join(outDir, base + '.ts');
+  await downloadHlsNative(url, headers, ts, log);
+  return ts;
+}
+
+module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls };
