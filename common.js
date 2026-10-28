@@ -42,6 +42,17 @@ function runFfmpeg(url, headers, dest, log) {
 
 
 
+// Некоторые сайты маскируют сегменты под картинки: перед настоящим MPEG-TS идёт лишний заголовок.
+// Находим начало потока по метке синхронизации 0x47, которая повторяется каждые 188 байт.
+function stripFakeHeader(buf) {
+  if (buf[0] === 0x47 && buf[188] === 0x47) return buf;
+  const lim = Math.min(buf.length - 376, 4096);
+  for (let i = 0; i < lim; i++) {
+    if (buf[i] === 0x47 && buf[i + 188] === 0x47 && buf[i + 376] === 0x47) return buf.subarray(i);
+  }
+  return buf;
+}
+
 // HLS без ffmpeg: качаем сегменты и склеиваем в .ts (поддерживает AES-128).
 async function downloadHlsNative(playlistUrl, headers, dest, log) {
   const crypto = require('crypto');
@@ -99,6 +110,7 @@ async function downloadHlsNative(playlistUrl, headers, dest, log) {
         const d = crypto.createDecipheriv('aes-128-cbc', keys[s.key.uri], iv);
         data = Buffer.concat([d.update(data), d.final()]);
       }
+      data = stripFakeHeader(data);
       if (!out.write(data)) await new Promise((r) => out.once('drain', r));
       if (i % 5 === 0 || i === segs.length - 1) log(`Сегменты: ${i + 1}/${segs.length}`);
     }
