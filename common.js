@@ -140,6 +140,12 @@ const isDirectVideoUrl = (u) => DIRECT_RE.test(u);
 
 async function grabDirect(url, { outDir, log = console.log, onProgress, referer } = {}) {
   const path = require('path');
+  if (/\.(ts|m4s)(\?|#|$)/i.test(url)) {
+    throw new Error(
+      'Это ссылка на один кусок видео (сегмент), а нужен адрес плейлиста — он содержит список всех кусков. ' +
+        'Обычно он похож на .../index.php/m3u8/....m3u8 или .../index.php/m3u8/<что-то> без /ts/ и отдаёт текст, начинающийся с #EXTM3U.'
+    );
+  }
   fs.mkdirSync(outDir, { recursive: true });
   const headers = { 'User-Agent': UA };
   if (referer) headers.Referer = referer;
