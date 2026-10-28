@@ -131,7 +131,7 @@ async function grabDirect(url, { outDir, log = console.log, onProgress, referer 
   fs.mkdirSync(outDir, { recursive: true });
   const headers = { 'User-Agent': UA };
   if (referer) headers.Referer = referer;
-  const base = 'video-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const base = 'video-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 23);
   log('Прямая ссылка на видео — браузер не нужен.');
   let file;
   if (/m3u8/i.test(url)) {

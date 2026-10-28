@@ -224,7 +224,7 @@ async function grab(pageUrl, opts = {}) {
     takeCommands, // () => [{type,x0,y0,x1,y1,touch}] — ручные команды из веб-формы
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
-  if (isDirectVideoUrl(pageUrl)) return grabDirect(pageUrl, opts);
+  if (isDirectVideoUrl(pageUrl)) return grabDirect(pageUrl, { outDir, log, onProgress, referer });
 
   let browser;
   try {
