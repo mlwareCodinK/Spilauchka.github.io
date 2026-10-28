@@ -1,22 +1,13 @@
 // Достаёт видео со страницы с плеером DPlayer.
 // Открывает страницу в чистом браузере (без куки), запускает воспроизведение,
 // ждёт буферизации (по умолчанию 60 сек), ловит ссылку на видео и скачивает его.
-const { chromium } = require('playwright');
-const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { Readable } = require('stream');
-const { pipeline } = require('stream/promises');
+const { UA, sleep, safeName, downloadFile, runFfmpeg } = require('./common');
+const { grabLite } = require('./lite');
 
 const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)/i;
 const PLAYLIST_CT_RE = /mpegurl/i;
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const safeName = (s) =>
-  (s || 'video').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'video';
-
 // Нажимаем play во всех фреймах: DPlayer часто лежит в iframe.
 async function startPlayback(page) {
   for (const frame of page.frames()) {
@@ -71,36 +62,6 @@ function kindOf(url, ct = '') {
   return 'file';
 }
 
-async function downloadFile(url, headers, dest, log, onProgress) {
-  const res = await fetch(url, { headers });
-  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} при скачивании ${url}`);
-  const total = Number(res.headers.get('content-length')) || 0;
-  let done = 0;
-  const body = Readable.fromWeb(res.body);
-  body.on('data', (chunk) => {
-    done += chunk.length;
-    onProgress && onProgress(done, total);
-  });
-  await pipeline(body, fs.createWriteStream(dest));
-  log(`Скачано ${(done / 1048576).toFixed(1)} МБ`);
-}
-
-function runFfmpeg(url, headers, dest, log) {
-  return new Promise((resolve, reject) => {
-    const hdr = Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('');
-    const args = ['-y', '-loglevel', 'error', '-stats', '-headers', hdr, '-i', url, '-c', 'copy'];
-    if (dest.endsWith('.mp4')) args.push('-bsf:a', 'aac_adtstoasc');
-    args.push(dest);
-    const p = spawn('ffmpeg', args);
-    p.stderr.on('data', (d) => {
-      const m = String(d).match(/time=(\S+)/);
-      if (m) log(`ffmpeg: ${m[1]}`);
-    });
-    p.on('error', (e) => reject(new Error('Не удалось запустить ffmpeg (он установлен?): ' + e.message)));
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error('ffmpeg завершился с кодом ' + code))));
-  });
-}
-
 async function grab(pageUrl, opts = {}) {
   const {
     outDir = path.join(process.cwd(), 'downloads'),
@@ -111,7 +72,14 @@ async function grab(pageUrl, opts = {}) {
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
 
-  const browser = await chromium.launch({ headless, args: ['--autoplay-policy=no-user-gesture-required'] });
+  let browser;
+  try {
+    const { chromium } = require('playwright');
+    browser = await chromium.launch({ headless, args: ['--autoplay-policy=no-user-gesture-required'] });
+  } catch (e) {
+    log('Браузер недоступен (' + e.message.split('\n')[0] + ') — работаю без браузера.');
+    return grabLite(pageUrl, opts);
+  }
   try {
     // Новый контекст = чистый профиль без куки/кэша/localStorage
     const context = await browser.newContext({ userAgent: UA });
