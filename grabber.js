@@ -93,15 +93,26 @@ async function grab(pageUrl, opts = {}) {
         log(`Найдено (${kind}): ${url.slice(0, 120)}`);
       }
     };
-    page.on('response', (res) => {
+    const seen = []; // для отладки: что вообще грузила страница
+    page.on('response', async (res) => {
       const url = res.url();
-      const ct = res.headers()['content-type'] || '';
+      const h = res.headers();
+      const ct = h['content-type'] || '';
       if (/^(blob|data):/.test(url)) return;
+      const type = res.request().resourceType();
+      if (seen.length < 60 && ['xhr', 'fetch', 'media', 'other'].includes(type)) seen.push(`${type} ${res.status()} ${ct.split(';')[0]} ${url.slice(0, 110)}`);
       if (/\.(ts|m4s)(\?|#|$)/i.test(url)) return; // сегменты не нужны, нужен плейлист
-      if (VIDEO_URL_RE.test(url) || /^video\//i.test(ct) || PLAYLIST_CT_RE.test(ct)) {
-        const range = res.headers()['content-range'];
-        const size = range ? Number(range.split('/')[1]) : Number(res.headers()['content-length']) || 0;
+      const size = h['content-range'] ? Number(h['content-range'].split('/')[1]) : Number(h['content-length']) || 0;
+      if (VIDEO_URL_RE.test(url) || /^video\//i.test(ct) || PLAYLIST_CT_RE.test(ct) || type === 'media') {
         add(url, kindOf(url, ct), size);
+        return;
+      }
+      // плейлист без .m3u8 в адресе и с обычным content-type: смотрим на начало тела
+      if (['xhr', 'fetch', 'other'].includes(type) && res.status() === 200 && size < 2e6 && !/image|font|css|javascript/i.test(ct)) {
+        try {
+          const body = await res.text();
+          if (body.trimStart().startsWith('#EXTM3U')) add(url, 'hls', size);
+        } catch {}
       }
     });
 
@@ -121,7 +132,11 @@ async function grab(pageUrl, opts = {}) {
     for (const s of await domVideoSources(page)) add(s, kindOf(s), 0);
 
     const best = pickBest([...cands.values()]);
-    if (!best) throw new Error('Видео не найдено. Попробуй увеличить время ожидания или проверь ссылку.');
+    if (!best) {
+      log('--- Запросы страницы (для отладки) ---');
+      seen.forEach((s) => log(s));
+      throw new Error('Видео не найдено. Список запросов страницы выше в логе.');
+    }
     if (best.kind === 'dash') throw new Error('Найден DASH (.mpd) — такой формат пока не поддерживается.');
 
     const headers = { 'User-Agent': UA, Referer: pageUrl };
