@@ -8,6 +8,135 @@ const { grabLite } = require('./lite');
 
 const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
 const PLAYLIST_CT_RE = /mpegurl/i;
+// Слайдер-проверка («拖拽滑块验证» и подобные): ищем ползунок и протягиваем до края дорожки.
+async function findSlider(frame, custom) {
+  return frame
+    .evaluate((custom) => {
+      document.querySelectorAll('[data-dl-handle],[data-dl-track]').forEach((e) => {
+        e.removeAttribute('data-dl-handle');
+        e.removeAttribute('data-dl-track');
+      });
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8 && cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+      };
+      const desc = (el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className && el.className.toString() ? '.' + el.className.toString().trim().split(/\s+/).join('.') : '');
+      const textRe = /拖|滑块|滑動|滑动|验证|驗證|slide|drag|swipe|unlock|verify/i;
+      const clsRe = /slid|drag|swipe|unlock|verif|captcha|track|handle|knob|thumb/i;
+      const all = [...document.querySelectorAll('body *')].filter(visible);
+      let tracks;
+      if (custom) {
+        const t = document.querySelector(custom);
+        if (!t) return null;
+        tracks = [t];
+      } else {
+        tracks = all.filter((el) => {
+          const r = el.getBoundingClientRect();
+          if (r.width < 150 || r.width > 900 || r.height < 28 || r.height > 130 || r.width / r.height < 3) return false;
+          const hay = (el.innerText || '').slice(0, 40) + ' ' + el.id + ' ' + el.className;
+          return textRe.test(hay) || clsRe.test(hay);
+        });
+        // самая внутренняя дорожка не нужна: берём наибольшую по площади из подходящих
+        tracks.sort((a, b) => b.getBoundingClientRect().width * b.getBoundingClientRect().height - a.getBoundingClientRect().width * a.getBoundingClientRect().height);
+      }
+      for (const track of tracks) {
+        const tr = track.getBoundingClientRect();
+        const root = track.parentElement && track.parentElement.parentElement ? track.parentElement.parentElement : document.body;
+        const cands = [...root.querySelectorAll('*')].filter((el) => {
+          if (el === track || !visible(el)) return false;
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          return (
+            r.width >= 24 && r.width <= 140 && r.width / r.height > 0.6 && r.width / r.height < 1.6 &&
+            r.height >= tr.height * 0.55 && r.height <= tr.height * 1.4 &&
+            cx < tr.left + tr.width * 0.35 && cx > tr.left - 10 && Math.abs(r.top + r.height / 2 - (tr.top + tr.height / 2)) < tr.height
+          );
+        });
+        const score = (el) => (/grab|pointer|move/.test(getComputedStyle(el).cursor) ? 2 : 0) + (clsRe.test(el.className + ' ' + el.id) ? 1 : 0);
+        cands.sort((a, b) => score(b) - score(a));
+        const handle = custom ? track : cands[0];
+        if (handle) {
+          handle.setAttribute('data-dl-handle', '1');
+          track.setAttribute('data-dl-track', '1');
+          return { handle: desc(handle), track: desc(track) };
+        }
+      }
+      // запасной вариант: обычный <input type=range>
+      const range = [...document.querySelectorAll('input[type=range]')].find(visible);
+      if (range) {
+        range.value = range.max || 100;
+        range.dispatchEvent(new Event('input', { bubbles: true }));
+        range.dispatchEvent(new Event('change', { bubbles: true }));
+        return { range: true };
+      }
+      return null;
+    }, custom || '')
+    .catch(() => null);
+}
+
+async function dragSlider(page, context, frame, log) {
+  const h = await frame.$('[data-dl-handle]');
+  const t = await frame.$('[data-dl-track]');
+  if (!h || !t) return false;
+  const hb = await h.boundingBox();
+  const tb = await t.boundingBox();
+  if (!hb || !tb) return false;
+  const y = hb.y + hb.height / 2;
+  const x0 = hb.x + hb.width / 2;
+  const x1 = tb.x + tb.width - hb.width / 2 - 1;
+  const dist = x1 - x0;
+  const pts = [];
+  for (let i = 1; i <= 30; i++) {
+    const p = i / 30;
+    const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    pts.push([x0 + dist * ease, y + (Math.random() - 0.5) * 2]);
+  }
+  await page.mouse.move(x0, y);
+  await page.mouse.down();
+  for (const [x, yy] of pts) {
+    await page.mouse.move(x, yy);
+    await sleep(15 + Math.random() * 15);
+  }
+  await page.mouse.up();
+  await sleep(700);
+  let after = await h.boundingBox().catch(() => null);
+  if (after && after.x + after.width / 2 - x0 > dist * 0.6) return true;
+  if (!(await h.isVisible().catch(() => false))) return true;
+
+  // мышь не сработала — пробуем настоящие касания (сайт мог слушать только touch)
+  log('Мышью не вышло, пробую касанием...');
+  const cdp = await context.newCDPSession(page);
+  const touch = (type, x, yy) =>
+    cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y: yy }] });
+  await touch('touchStart', x0, y);
+  for (const [x, yy] of pts) {
+    await touch('touchMove', x, yy);
+    await sleep(15 + Math.random() * 15);
+  }
+  await touch('touchEnd', x1, y);
+  await sleep(700);
+  after = await h.boundingBox().catch(() => null);
+  return !after || after.x + after.width / 2 - x0 > dist * 0.6 || !(await h.isVisible().catch(() => false));
+}
+
+async function solveSlider(page, context, log, custom) {
+  for (const frame of page.frames()) {
+    const found = await findSlider(frame, custom);
+    if (!found) continue;
+    log(`Нашёл слайдер: ползунок ${found.handle || 'range'}, дорожка ${found.track || '-'}`);
+    if (found.range) return true;
+    try {
+      const ok = await dragSlider(page, context, frame, log);
+      log(ok ? 'Слайдер пройден.' : 'Слайдер не поддался, попробую ещё раз.');
+      return ok;
+    } catch (e) {
+      log('Ошибка при протягивании слайдера: ' + e.message.split('\n')[0]);
+    }
+  }
+  return false;
+}
+
 // Нажимаем play во всех фреймах: DPlayer часто лежит в iframe.
 async function startPlayback(page) {
   for (const frame of page.frames()) {
@@ -69,6 +198,7 @@ async function grab(pageUrl, opts = {}) {
     log = console.log,
     onProgress,
     headless = true,
+    sliderSelector = '',
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -82,7 +212,7 @@ async function grab(pageUrl, opts = {}) {
   }
   try {
     // Новый контекст = чистый профиль без куки/кэша/localStorage
-    const context = await browser.newContext({ userAgent: UA });
+    const context = await browser.newContext({ userAgent: UA, hasTouch: true });
     await context.clearCookies();
     const page = await context.newPage();
 
@@ -122,7 +252,14 @@ async function grab(pageUrl, opts = {}) {
 
     const end = Date.now() + waitMs;
     let tick = 0;
+    let sliderDone = false;
+    let sliderTries = 0;
     while (Date.now() < end) {
+      if (!sliderDone && sliderTries < 8 && tick % 3 === 1) {
+        sliderDone = await solveSlider(page, context, log, sliderSelector);
+        if (sliderDone) await startPlayback(page);
+        else sliderTries++;
+      }
       if (tick % 5 === 0) await startPlayback(page);
       if (tick % 5 === 4) for (const s of await domVideoSources(page)) add(s, kindOf(s), 0);
       if (tick % 10 === 0) log(`Жду буферизацию: осталось ${Math.ceil((end - Date.now()) / 1000)} сек`);
@@ -164,12 +301,12 @@ async function grab(pageUrl, opts = {}) {
 module.exports = { grab };
 
 if (require.main === module) {
-  const [url, wait] = process.argv.slice(2);
+  const [url, wait, slider] = process.argv.slice(2);
   if (!url) {
-    console.error('Использование: node grabber.js <ссылка на страницу> [секунд ожидания, по умолчанию 60]');
+    console.error('Использование: node grabber.js <ссылка на страницу> [секунд ожидания, по умолчанию 60] [css-селектор слайдера]');
     process.exit(1);
   }
-  grab(url, { waitMs: (Number(wait) || 60) * 1000 }).catch((e) => {
+  grab(url, { waitMs: (Number(wait) || 60) * 1000, sliderSelector: slider }).catch((e) => {
     console.error('Ошибка:', e.message);
     process.exit(1);
   });

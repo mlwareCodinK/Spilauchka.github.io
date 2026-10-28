@@ -60,6 +60,7 @@ http
       grab(body.url, {
         outDir: OUT_DIR,
         waitMs: wait * 1000,
+        sliderSelector: String(body.slider || '').slice(0, 200),
         log: (m) => job.logs.push(m),
         onProgress: (done, total) => (job.progress = { done, total }),
       })

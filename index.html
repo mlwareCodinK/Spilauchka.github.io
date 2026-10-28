@@ -22,6 +22,7 @@
 <input id="url" type="text" placeholder="Вставь ссылку на страницу с видео" autofocus>
 <div class="row">
   <label>Ждать буферизацию, сек: <input id="wait" type="number" value="60" min="5" max="600"></label>
+  <label>Селектор слайдера (необязательно): <input id="slider" type="text" style="width:180px;margin:0"></label>
   <button id="go">Скачать</button>
 </div>
 <p style="font-size:.85rem;color:#9aa0aa">Страница открывается в чистом браузере без куки, видео играет ~минуту, затем ссылка на файл перехватывается и видео скачивается.</p>
@@ -31,7 +32,7 @@
 const $ = (id) => document.getElementById(id);
 $('go').onclick = async () => {
   $('go').disabled = true; $('log').textContent = ''; $('result').innerHTML = '';
-  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify({ url: $('url').value.trim(), wait: $('wait').value }) });
+  const r = await fetch('/api/start', { method: 'POST', body: JSON.stringify({ url: $('url').value.trim(), wait: $('wait').value, slider: $('slider').value.trim() }) });
   const j = await r.json();
   if (!r.ok) { $('log').innerHTML = '<span class="err">' + j.error + '</span>'; $('go').disabled = false; return; }
   const timer = setInterval(async () => {
