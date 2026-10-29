@@ -3,7 +3,7 @@
 // ждёт буферизации (по умолчанию 60 сек), ловит ссылку на видео и скачивает его.
 const fs = require('fs');
 const path = require('path');
-const { UA, sleep, safeName, downloadFile, downloadHls, grabDirect, isDirectVideoUrl } = require('./common');
+const { UA, sleep, safeName, downloadFile, downloadHls, grabDirect, isDirectVideoUrl, tsOffset, remuxToMp4 } = require('./common');
 const { grabLite } = require('./lite');
 
 const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
@@ -177,6 +177,35 @@ async function startPlayback(page) {
   }
 }
 
+// Крутим видео на максимальной скорости, чтобы плеер быстро подгрузил все куски.
+async function boostPlayback(page) {
+  for (const frame of page.frames()) {
+    await frame
+      .evaluate(() => {
+        document.querySelectorAll('video').forEach((v) => {
+          v.muted = true;
+          v.playbackRate = 16;
+          if (v.paused && !v.ended) v.play().catch(() => {});
+        });
+      })
+      .catch(() => {});
+  }
+}
+
+async function videoState(page) {
+  let any = null;
+  for (const frame of page.frames()) {
+    const st = await frame
+      .evaluate(() => {
+        const v = [...document.querySelectorAll('video')].sort((a, b) => (b.duration || 0) - (a.duration || 0))[0];
+        return v ? { t: v.currentTime, d: v.duration, ended: v.ended } : null;
+      })
+      .catch(() => null);
+    if (st && (!any || (st.d || 0) > (any.d || 0))) any = st;
+  }
+  return any;
+}
+
 async function domVideoSources(page) {
   const out = [];
   for (const frame of page.frames()) {
@@ -221,6 +250,8 @@ async function grab(pageUrl, opts = {}) {
     sliderSelector = '',
     referer, // (только для прямой ссылки) с какого адреса якобы грузим видео
     onShot, // (jpegBuffer) => void — отдаёт кадры страницы в веб-форму
+    recordSegments = false, // ловить и склеивать куски видео, пока оно играет
+    recordIdleMs = 30000, // сколько ждать новых кусков до остановки записи
     takeCommands, // () => [{type,x0,y0,x1,y1,touch}] — ручные команды из веб-формы
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
@@ -234,6 +265,7 @@ async function grab(pageUrl, opts = {}) {
     log('Браузер недоступен (' + e.message.split('\n')[0] + ') — работаю без браузера.');
     return grabLite(pageUrl, opts);
   }
+  let partsDir = null; // временная папка с записанными кусками
   try {
     // Новый контекст = чистый профиль без куки/кэша/localStorage
     const context = await browser.newContext({ userAgent: UA, hasTouch: true, viewport: { width: 1280, height: 720 } });
@@ -248,6 +280,48 @@ async function grab(pageUrl, opts = {}) {
       }
     };
     const seen = []; // для отладки: что вообще грузила страница
+    // --- запись кусков видео (MPEG-TS) по мере того, как их грузит плеер ---
+    const SEG_TYPES = ['xhr', 'fetch', 'other'];
+    const segUrls = new Set();
+    const reqSeq = new Map();
+    let seqCounter = 0;
+    let segCount = 0;
+    let segBytes = 0;
+    page.on('request', (r) => {
+      if (SEG_TYPES.includes(r.resourceType())) reqSeq.set(r, ++seqCounter);
+    });
+    const captureSegment = async (res, url, ct) => {
+      if (segUrls.has(url) || /m3u8|mpegurl/i.test(url + ct)) return false;
+      const len = Number(res.headers()['content-length']) || 0;
+      if (len && (len < 4000 || len > 80e6)) return false;
+      try {
+        let buf = await res.body();
+        // Chromium портит двоичный ответ, если сайт отдал его с «текстовым» типом: перекачиваем куски заново
+        const h = res.headers();
+        const clen = Number(h['content-length']) || 0;
+        if ((clen && !h['content-encoding'] && buf.length !== clen) || /^text\//i.test(ct)) {
+          const again = await context.request.get(url, { headers: { Referer: page.url() }, timeout: 30000 }).catch(() => null);
+          if (again && again.ok()) buf = await again.body();
+        }
+        const off = tsOffset(buf);
+        if (off < 0) return false;
+        segUrls.add(url);
+        if (!partsDir) {
+          partsDir = path.join(outDir, '.parts-' + Date.now());
+          fs.mkdirSync(partsDir, { recursive: true });
+        }
+        const seq = reqSeq.get(res.request()) || ++seqCounter;
+        fs.writeFileSync(path.join(partsDir, String(seq).padStart(8, '0') + '.ts'), buf.subarray(off));
+        segCount++;
+        segBytes += buf.length - off;
+        lastSegAt = Date.now();
+        if (segCount === 1) log('Плеер грузит куски видео — записываю их.');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let lastSegAt = Date.now();
     page.on('response', async (res) => {
       const url = res.url();
       const h = res.headers();
@@ -255,7 +329,8 @@ async function grab(pageUrl, opts = {}) {
       if (/^(blob|data):/.test(url)) return;
       const type = res.request().resourceType();
       if (seen.length < 60 && ['xhr', 'fetch', 'media', 'other'].includes(type)) seen.push(`${type} ${res.status()} ${ct.split(';')[0]} ${url.slice(0, 110)}`);
-      if (/\.(ts|m4s)(\?|#|$)/i.test(url)) return; // сегменты не нужны, нужен плейлист
+      if (SEG_TYPES.includes(type) && [200, 206].includes(res.status()) && (await captureSegment(res, url, ct))) return;
+      if (/\.(ts|m4s)(\?|#|$)/i.test(url)) return; // сегменты в плейлист-режиме не нужны
       const size = h['content-range'] ? Number(h['content-range'].split('/')[1]) : Number(h['content-length']) || 0;
       if (VIDEO_URL_RE.test(url) || /^video\//i.test(ct) || PLAYLIST_CT_RE.test(ct) || type === 'media') {
         add(url, kindOf(url, ct), size);
@@ -298,18 +373,31 @@ async function grab(pageUrl, opts = {}) {
     let tick = 0;
     let sliderDone = false;
     let sliderTries = 0;
-    while (Date.now() < end) {
+    // ручные команды из веб-формы; true, если что-то выполнили
+    const handleCommands = async () => {
+      let did = false;
       for (const c of (takeCommands && takeCommands()) || []) {
         try {
           await runCommand(page, context, c, log);
+          did = true;
           sliderDone = true; // раз руками что-то сделали, автоподбор больше не лезет
           await sleep(800);
           await startPlayback(page);
-          end = Date.now() + waitMs; // после ручного действия ждём буферизацию заново
-          log(`Жду буферизацию ${Math.round(waitMs / 1000)} сек после действия`);
         } catch (e) {
           log('Ошибка команды: ' + e.message.split('\n')[0]);
         }
+      }
+      return did;
+    };
+    const shoot = async () => {
+      if (!onShot) return;
+      const shot = await page.screenshot({ type: 'jpeg', quality: 60, timeout: 4000 }).catch(() => null);
+      if (shot) onShot(shot);
+    };
+    while (Date.now() < end) {
+      if (await handleCommands()) {
+        end = Date.now() + waitMs; // после ручного действия ждём буферизацию заново
+        log(`Жду буферизацию ${Math.round(waitMs / 1000)} сек после действия`);
       }
       if (!sliderDone && sliderTries < 8 && tick % 3 === 1) {
         sliderDone = await solveSlider(page, context, log, sliderSelector);
@@ -320,10 +408,7 @@ async function grab(pageUrl, opts = {}) {
         }
       }
       if (tick === 4 || tick === 15) await probe('Состояние страницы');
-      if (onShot) {
-        const shot = await page.screenshot({ type: 'jpeg', quality: 60, timeout: 4000 }).catch(() => null);
-        if (shot) onShot(shot);
-      }
+      await shoot();
       if (tick % 5 === 0) await startPlayback(page);
       if (tick % 5 === 4) for (const s of await domVideoSources(page)) add(s, kindOf(s), 0);
       if (tick % 10 === 0) log(`Жду буферизацию: осталось ${Math.ceil((end - Date.now()) / 1000)} сек`);
@@ -333,6 +418,53 @@ async function grab(pageUrl, opts = {}) {
     for (const s of await domVideoSources(page)) add(s, kindOf(s), 0);
 
     const best = pickBest([...cands.values()]);
+    const base = safeName(title);
+
+    if (segCount > 0 && (recordSegments || !best)) {
+      log('Записываю куски, пока видео играет (воспроизведение ускорено)...');
+      const cap = Date.now() + (Number(process.env.MAX_RECORD_MIN) || 60) * 60000;
+      let lastCount = -1;
+      let idleSince = Date.now();
+      let rt = 0;
+      while (Date.now() < cap) {
+        await handleCommands();
+        await boostPlayback(page);
+        const st = await videoState(page);
+        if (segCount !== lastCount) {
+          lastCount = segCount;
+          idleSince = Date.now();
+        }
+        if (rt % 5 === 0) {
+          const pos = st && isFinite(st.d) ? `, видео ${Math.round(st.t)}/${Math.round(st.d)} сек` : '';
+          log(`Куски: ${segCount} (${(segBytes / 1048576).toFixed(1)} МБ)${pos}`);
+        }
+        const finished = st && (st.ended || (isFinite(st.d) && st.d > 0 && st.t >= st.d - 1));
+        if (finished && Date.now() - idleSince > 4000) break;
+        if (Date.now() - idleSince > recordIdleMs) {
+          log('Новых кусков нет — заканчиваю запись.');
+          break;
+        }
+        await shoot();
+        await sleep(1000);
+        rt++;
+      }
+      const files = fs.readdirSync(partsDir).sort();
+      const ts = path.join(outDir, base + '.ts');
+      const out = fs.createWriteStream(ts);
+      for (const f of files) {
+        if (!out.write(fs.readFileSync(path.join(partsDir, f)))) await new Promise((r) => out.once('drain', r));
+      }
+      await new Promise((r) => out.end(r));
+      let dest = ts;
+      const mp4 = path.join(outDir, base + '.mp4');
+      if (await remuxToMp4(ts, mp4, log)) {
+        fs.rmSync(ts, { force: true });
+        dest = mp4;
+      }
+      log(`Склеено кусков: ${files.length}. Готово: ${dest}`);
+      return { file: dest, title, source: 'segments' };
+    }
+
     if (!best) {
       log('--- Запросы страницы (для отладки) ---');
       seen.forEach((s) => log(s));
@@ -344,7 +476,6 @@ async function grab(pageUrl, opts = {}) {
     const cookies = await context.cookies(best.url);
     if (cookies.length) headers.Cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
-    const base = safeName(title);
     let dest;
     if (best.kind === 'hls') {
       log('Скачиваю HLS-поток...');
@@ -358,6 +489,7 @@ async function grab(pageUrl, opts = {}) {
     log('Готово: ' + dest);
     return { file: dest, title, source: best.url };
   } finally {
+    if (partsDir) fs.rmSync(partsDir, { recursive: true, force: true });
     await browser.close(); // вместе с браузером уничтожается и весь профиль с куки
   }
 }
@@ -365,12 +497,12 @@ async function grab(pageUrl, opts = {}) {
 module.exports = { grab };
 
 if (require.main === module) {
-  const [url, wait, slider] = process.argv.slice(2);
+  const [url, wait, slider, record] = process.argv.slice(2);
   if (!url) {
-    console.error('Использование: node grabber.js <ссылка на страницу> [секунд ожидания, по умолчанию 60] [css-селектор слайдера]');
+    console.error('Использование: node grabber.js <ссылка на страницу> [секунд ожидания, по умолчанию 60] [css-селектор слайдера или -] [record — всегда записывать куски]');
     process.exit(1);
   }
-  grab(url, { waitMs: (Number(wait) || 60) * 1000, sliderSelector: slider }).catch((e) => {
+  grab(url, { waitMs: (Number(wait) || 60) * 1000, sliderSelector: slider === '-' ? '' : slider, recordSegments: record === 'record', recordIdleMs: Number(process.env.RECORD_IDLE_MS) || 30000 }).catch((e) => {
     console.error('Ошибка:', e.message);
     process.exit(1);
   });

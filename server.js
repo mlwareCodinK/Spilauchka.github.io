@@ -61,6 +61,7 @@ http
         outDir: OUT_DIR,
         waitMs: wait * 1000,
         sliderSelector: String(body.slider || '').slice(0, 200),
+        recordSegments: !!body.record,
         referer: /^https?:\/\//i.test(body.referer || '') ? body.referer : '',
         log: (m) => job.logs.push(m),
         onProgress: (done, total) => (job.progress = { done, total }),

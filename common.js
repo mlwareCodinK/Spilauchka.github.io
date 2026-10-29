@@ -44,13 +44,25 @@ function runFfmpeg(url, headers, dest, log) {
 
 // Некоторые сайты маскируют сегменты под картинки: перед настоящим MPEG-TS идёт лишний заголовок.
 // Находим начало потока по метке синхронизации 0x47, которая повторяется каждые 188 байт.
-function stripFakeHeader(buf) {
-  if (buf[0] === 0x47 && buf[188] === 0x47) return buf;
+function tsOffset(buf) {
   const lim = Math.min(buf.length - 376, 4096);
   for (let i = 0; i < lim; i++) {
-    if (buf[i] === 0x47 && buf[i + 188] === 0x47 && buf[i + 376] === 0x47) return buf.subarray(i);
+    if (buf[i] === 0x47 && buf[i + 188] === 0x47 && buf[i + 376] === 0x47) return i;
   }
-  return buf;
+  return -1;
+}
+function stripFakeHeader(buf) {
+  const i = tsOffset(buf);
+  return i > 0 ? buf.subarray(i) : buf;
+}
+
+// Склеенный .ts -> .mp4 без перекодирования (если ffmpeg есть и справился).
+function remuxToMp4(ts, mp4, log) {
+  return new Promise((resolve) => {
+    const p = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-i', ts, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', mp4]);
+    p.on('error', () => resolve(false));
+    p.on('close', (code) => resolve(code === 0));
+  });
 }
 
 // HLS без ffmpeg: качаем сегменты и склеиваем в .ts (поддерживает AES-128).
@@ -165,4 +177,4 @@ async function grabDirect(url, { outDir, log = console.log, onProgress, referer 
   return { file, title: base, source: url };
 }
 
-module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls, grabDirect, isDirectVideoUrl };
+module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls, grabDirect, isDirectVideoUrl, tsOffset, remuxToMp4 };
