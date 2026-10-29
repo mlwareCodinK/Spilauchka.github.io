@@ -3,10 +3,10 @@
 // ждёт буферизации (по умолчанию 60 сек), ловит ссылку на видео и скачивает его.
 const fs = require('fs');
 const path = require('path');
-const { UA, sleep, safeName, downloadFile, downloadHls, grabDirect, isDirectVideoUrl, tsOffset, remuxToMp4 } = require('./common');
+const { UA, sleep, safeName, downloadFile, downloadHls, grabDirect, isDirectVideoUrl, tsOffset, tsInfo, remuxToMp4 } = require('./common');
 const { grabLite } = require('./lite');
 
-const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
+const VIDEO_URL_RE = /\.(mp4|m3u8|webm|flv|mkv|mpd|m2ts)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
 const PLAYLIST_CT_RE = /mpegurl/i;
 // Слайдер-проверка («拖拽滑块验证» и подобные): ищем ползунок и протягиваем до края дорожки.
 async function findSlider(frame, custom) {
@@ -287,6 +287,7 @@ async function grab(pageUrl, opts = {}) {
     let seqCounter = 0;
     let segCount = 0;
     let segBytes = 0;
+    let isM2ts = false;
     page.on('request', (r) => {
       if (SEG_TYPES.includes(r.resourceType())) reqSeq.set(r, ++seqCounter);
     });
@@ -303,8 +304,10 @@ async function grab(pageUrl, opts = {}) {
           const again = await context.request.get(url, { headers: { Referer: page.url() }, timeout: 30000 }).catch(() => null);
           if (again && again.ok()) buf = await again.body();
         }
-        const off = tsOffset(buf);
-        if (off < 0) return false;
+        const info = tsInfo(buf);
+        if (!info) return false;
+        const off = info.off;
+        if (info.stride === 192) isM2ts = true;
         segUrls.add(url);
         if (!partsDir) {
           partsDir = path.join(outDir, '.parts-' + Date.now());
@@ -330,7 +333,7 @@ async function grab(pageUrl, opts = {}) {
       const type = res.request().resourceType();
       if (seen.length < 60 && ['xhr', 'fetch', 'media', 'other'].includes(type)) seen.push(`${type} ${res.status()} ${ct.split(';')[0]} ${url.slice(0, 110)}`);
       if (SEG_TYPES.includes(type) && [200, 206].includes(res.status()) && (await captureSegment(res, url, ct))) return;
-      if (/\.(ts|m4s)(\?|#|$)/i.test(url)) return; // сегменты в плейлист-режиме не нужны
+      if (/\.(ts|m2ts|m4s)(\?|#|$)/i.test(url)) return; // сегменты в плейлист-режиме не нужны
       const size = h['content-range'] ? Number(h['content-range'].split('/')[1]) : Number(h['content-length']) || 0;
       if (VIDEO_URL_RE.test(url) || /^video\//i.test(ct) || PLAYLIST_CT_RE.test(ct) || type === 'media') {
         add(url, kindOf(url, ct), size);
@@ -449,7 +452,7 @@ async function grab(pageUrl, opts = {}) {
         rt++;
       }
       const files = fs.readdirSync(partsDir).sort();
-      const ts = path.join(outDir, base + '.ts');
+      const ts = path.join(outDir, base + (isM2ts ? '.m2ts' : '.ts'));
       const out = fs.createWriteStream(ts);
       for (const f of files) {
         if (!out.write(fs.readFileSync(path.join(partsDir, f)))) await new Promise((r) => out.once('drain', r));

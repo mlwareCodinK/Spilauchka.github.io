@@ -44,12 +44,23 @@ function runFfmpeg(url, headers, dest, log) {
 
 // Некоторые сайты маскируют сегменты под картинки: перед настоящим MPEG-TS идёт лишний заголовок.
 // Находим начало потока по метке синхронизации 0x47, которая повторяется каждые 188 байт.
-function tsOffset(buf) {
-  const lim = Math.min(buf.length - 376, 4096);
+// Поддерживаются пакеты 188 (MPEG-TS), 192 (m2ts/Blu-ray: 4 байта метки времени + 188) и 204 (с коррекцией ошибок).
+// Возвращает {off, stride}: off — начало первого пакета (для 192 захватываем и его 4 байта метки).
+function tsInfo(buf) {
+  const lim = Math.min(buf.length - 408, 4096);
   for (let i = 0; i < lim; i++) {
-    if (buf[i] === 0x47 && buf[i + 188] === 0x47 && buf[i + 376] === 0x47) return i;
+    if (buf[i] !== 0x47) continue;
+    for (const stride of [188, 192, 204]) {
+      if (buf[i + stride] === 0x47 && buf[i + 2 * stride] === 0x47) {
+        return { off: stride === 192 && i >= 4 ? i - 4 : i, stride };
+      }
+    }
   }
-  return -1;
+  return null;
+}
+function tsOffset(buf) {
+  const t = tsInfo(buf);
+  return t ? t.off : -1;
 }
 function stripFakeHeader(buf) {
   const i = tsOffset(buf);
@@ -147,7 +158,7 @@ async function downloadHls(url, headers, outDir, base, log) {
 }
 
 // Прямая ссылка на видео (m3u8/mp4): браузер не нужен, качаем сразу.
-const DIRECT_RE = /\.(m3u8|mp4|webm|flv)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
+const DIRECT_RE = /\.(m3u8|mp4|webm|flv|m2ts)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
 const isDirectVideoUrl = (u) => DIRECT_RE.test(u);
 
 async function grabDirect(url, { outDir, log = console.log, onProgress, referer } = {}) {
@@ -177,4 +188,4 @@ async function grabDirect(url, { outDir, log = console.log, onProgress, referer 
   return { file, title: base, source: url };
 }
 
-module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls, grabDirect, isDirectVideoUrl, tsOffset, remuxToMp4 };
+module.exports = { UA, sleep, safeName, downloadFile, runFfmpeg, downloadHls, grabDirect, isDirectVideoUrl, tsOffset, tsInfo, remuxToMp4 };
