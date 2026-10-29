@@ -250,12 +250,14 @@ async function grab(pageUrl, opts = {}) {
     sliderSelector = '',
     referer, // (только для прямой ссылки) с какого адреса якобы грузим видео
     onShot, // (jpegBuffer) => void — отдаёт кадры страницы в веб-форму
+    userAgent, // User-Agent браузера (например, телефона); по умолчанию — обычный Chrome
+    viewport, // {width, height} экрана; с телефонным UA включается мобильный режим
     recordSegments = false, // ловить и склеивать куски видео, пока оно играет
     recordIdleMs = 30000, // сколько ждать новых кусков до остановки записи
     takeCommands, // () => [{type,x0,y0,x1,y1,touch}] — ручные команды из веб-формы
   } = opts;
   fs.mkdirSync(outDir, { recursive: true });
-  if (isDirectVideoUrl(pageUrl)) return grabDirect(pageUrl, { outDir, log, onProgress, referer });
+  if (isDirectVideoUrl(pageUrl)) return grabDirect(pageUrl, { outDir, log, onProgress, referer, userAgent });
 
   let browser;
   try {
@@ -265,10 +267,17 @@ async function grab(pageUrl, opts = {}) {
     log('Браузер недоступен (' + e.message.split('\n')[0] + ') — работаю без браузера.');
     return grabLite(pageUrl, opts);
   }
+  const ua = userAgent || UA;
+  const mobile = !!viewport && /Mobile|Android|iPhone|iPad/i.test(ua);
   let partsDir = null; // временная папка с записанными кусками
   try {
     // Новый контекст = чистый профиль без куки/кэша/localStorage
-    const context = await browser.newContext({ userAgent: UA, hasTouch: true, viewport: { width: 1280, height: 720 } });
+    const context = await browser.newContext({
+      userAgent: ua,
+      hasTouch: true,
+      isMobile: mobile,
+      viewport: viewport || { width: 1280, height: 720 },
+    });
     await context.clearCookies();
     const page = await context.newPage();
 
@@ -475,7 +484,7 @@ async function grab(pageUrl, opts = {}) {
     }
     if (best.kind === 'dash') throw new Error('Найден DASH (.mpd) — такой формат пока не поддерживается.');
 
-    const headers = { 'User-Agent': UA, Referer: pageUrl };
+    const headers = { 'User-Agent': ua, Referer: pageUrl };
     const cookies = await context.cookies(best.url);
     if (cookies.length) headers.Cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 

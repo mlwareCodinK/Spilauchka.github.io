@@ -161,7 +161,7 @@ async function downloadHls(url, headers, outDir, base, log) {
 const DIRECT_RE = /\.(m3u8|mp4|webm|flv|m2ts)(\?|#|$)|\/m3u8?(\/|\?|$)/i;
 const isDirectVideoUrl = (u) => DIRECT_RE.test(u);
 
-async function grabDirect(url, { outDir, log = console.log, onProgress, referer } = {}) {
+async function grabDirect(url, { outDir, log = console.log, onProgress, referer, userAgent } = {}) {
   const path = require('path');
   if (/\.(ts|m4s)(\?|#|$)/i.test(url)) {
     throw new Error(
@@ -170,7 +170,7 @@ async function grabDirect(url, { outDir, log = console.log, onProgress, referer 
     );
   }
   fs.mkdirSync(outDir, { recursive: true });
-  const headers = { 'User-Agent': UA };
+  const headers = { 'User-Agent': userAgent || UA };
   if (referer) headers.Referer = referer;
   const base = 'video-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 23);
   log('Прямая ссылка на видео — браузер не нужен.');

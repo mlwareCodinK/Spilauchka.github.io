@@ -62,6 +62,10 @@ http
         waitMs: wait * 1000,
         sliderSelector: String(body.slider || '').slice(0, 200),
         recordSegments: !!body.record,
+        userAgent: /^[\x20-\x7e]{10,300}$/.test(body.ua || '') ? body.ua : undefined,
+        viewport: body.viewport && Number(body.viewport.w) && Number(body.viewport.h)
+          ? { width: Math.min(Math.max(Math.round(body.viewport.w), 320), 1920), height: Math.min(Math.max(Math.round(body.viewport.h), 480), 2000) }
+          : undefined,
         referer: /^https?:\/\//i.test(body.referer || '') ? body.referer : '',
         log: (m) => job.logs.push(m),
         onProgress: (done, total) => (job.progress = { done, total }),
